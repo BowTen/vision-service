@@ -30,7 +30,7 @@ jobs:
         run: uv sync
 
       - name: Run tests (pytest)
-        run: uv run pytest -q
+        run: PYTHONPATH=. uv run pytest -q
         
   docker:
     needs: test
