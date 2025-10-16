@@ -14,11 +14,11 @@ class InferQueue:
         future: asyncio.Future = loop.create_future()
         await self._queue.put((infer_sync, future))
         if not self._is_running:
+            self._is_running = True
             asyncio.create_task(self._run_loop())
         return await future
 
     async def _run_loop(self):
-        self._is_running = True
         try:
             while True:
                 infer_sync, future = await self._queue.get()
