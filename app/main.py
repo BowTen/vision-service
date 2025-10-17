@@ -1,12 +1,15 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from app.config import settings
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动
     app.state.services = {}
+    app.state.html = {}
     if settings.service_mode == "txt2img":
         from app.service.txt2img_service import Txt2ImgService
 
@@ -22,6 +25,12 @@ async def lifespan(app: FastAPI):
         )
         app.state.services["img2txt"] = service
 
+    txt2img_html = Path("app/static/txt2img_test.html").read_text(encoding="utf-8")
+    img2txt_html = Path("app/static/img2txt_test.html").read_text(encoding="utf-8")
+
+    app.state.html["txt2img"] = txt2img_html
+    app.state.html["img2txt"] = img2txt_html
+
     yield
 
     # 关闭
@@ -32,8 +41,16 @@ app = FastAPI(title="vision-service", version="0.1", lifespan=lifespan)
 # 选择服务模式
 if settings.service_mode == "txt2img":
     from app.api.routes_txt2img import router as service_router
+
+    @app.get("/static/txt2img/page", include_in_schema=False)
+    async def txt2img_page():
+        return HTMLResponse(app.state.html["txt2img"])
 elif settings.service_mode == "img2txt":
     from app.api.routes_img2txt import router as service_router
+
+    @app.get("/static/img2txt/page", include_in_schema=False)
+    async def img2txt_page():
+        return HTMLResponse(app.state.html["img2txt"])
 else:
     raise ValueError(f"Unsupported service mode: {settings.service_mode}")
 

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>图片理解测试 (img2txt)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        :root {
+            color-scheme: light dark;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            padding: 1.25rem;
+            max-width: 820px;
+            line-height: 1.5;
+        }
+
+        h1 {
+            font-size: 1.4rem;
+            margin-top: 0;
+        }
+
+        section {
+            margin-bottom: 1.2rem;
+        }
+
+        label {
+            display: block;
+            margin: .4rem 0 .2rem;
+            font-weight: 600;
+        }
+
+        input[type=text],
+        textarea,
+        select {
+            width: 100%;
+            padding: .55rem .7rem;
+            border: 1px solid #888;
+            border-radius: 6px;
+            font: inherit;
+            background: transparent;
+        }
+
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        button {
+            cursor: pointer;
+            padding: .6rem 1.1rem;
+            border: 1px solid #555;
+            border-radius: 6px;
+            background: #222;
+            color: #fff;
+            font: inherit;
+        }
+
+        button:disabled {
+            opacity: .55;
+            cursor: not-allowed;
+        }
+
+        .radio-row {
+            display: flex;
+            gap: 1.2rem;
+            margin-top: .3rem;
+        }
+
+        #resultBox {
+            white-space: pre-wrap;
+            border: 1px solid #aaa;
+            padding: .6rem .7rem;
+            border-radius: 6px;
+            min-height: 4.5rem;
+            background: rgba(0, 0, 0, .04);
+            font-size: .9rem;
+        }
+
+        .preview-img {
+            max-width: 180px;
+            max-height: 180px;
+            display: block;
+            margin-top: .4rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            object-fit: contain;
+        }
+
+        .flex-row {
+            display: flex;
+            gap: .6rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        footer {
+            margin-top: 2rem;
+            font-size: .75rem;
+            opacity: .7;
+        }
+
+        small {
+            font-size: .7rem;
+            opacity: .7;
+            display: block;
+            margin-top: .15rem;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>图片理解测试 (img2txt)</h1>
+
+    <section>
+        <label>后端 IP:Port（可含协议）</label>
+        <input id="backend" type="text" placeholder="例如：127.0.0.1:8000 或 http://127.0.0.1:8000" />
+        <label>协议</label>
+        <div class="radio-row">
+            <label><input type="radio" name="proto" value="http" checked /> HTTP</label>
+            <label><input type="radio" name="proto" value="websocket" /> WebSocket</label>
+        </div>
+    </section>
+
+    <section>
+        <label>选择图片</label>
+        <input id="imageFile" type="file" accept="image/*" />
+        <img id="preview" class="preview-img" alt="预览" />
+    </section>
+
+    <section>
+        <label>提示词 Prompt</label>
+        <textarea id="prompt" placeholder="描述你想理解的内容..."></textarea>
+    </section>
+
+    <section class="flex-row">
+        <button id="sendBtn">开始解析</button>
+        <button id="clearBtn" type="button">清空</button>
+    </section>
+
+    <section>
+        <label>返回文本</label>
+        <div id="resultBox">--</div>
+    </section>
+
+    <footer>© 简洁测试页面，仅用于开发调试。</footer>
+
+    <script>
+        const backendInput = document.getElementById('backend');
+        const promptInput = document.getElementById('prompt');
+        const sendBtn = document.getElementById('sendBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const imageFileInput = document.getElementById('imageFile');
+        const resultBox = document.getElementById('resultBox');
+        const previewImg = document.getElementById('preview');
+
+        imageFileInput.addEventListener('change', () => {
+            const f = imageFileInput.files[0];
+            if (f) {
+                previewImg.src = URL.createObjectURL(f);
+            } else {
+                previewImg.src = '';
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            promptInput.value = '';
+            imageFileInput.value = '';
+            previewImg.src = '';
+            resultBox.textContent = '--';
+        });
+
+        function normalizeBase(url) {
+            url = url.trim();
+            if (!url) return '';
+            if (!/^https?:\/\//i.test(url)) {
+                url = 'http://' + url;
+            }
+            return url.replace(/\/+$/, '');
+        }
+        function toWsURL(httpUrl) {
+            return httpUrl.replace(/^http/i, 'ws');
+        }
+
+        sendBtn.addEventListener('click', async () => {
+            const base = normalizeBase(backendInput.value);
+            const prompt = promptInput.value.trim();
+            const file = imageFileInput.files[0];
+            if (!base) { alert('请输入后端地址'); return; }
+            if (!file) { alert('请选择图片'); return; }
+            if (!prompt) { alert('Prompt 不能为空'); return; }
+            const proto = document.querySelector('input[name="proto"]:checked').value;
+
+            sendBtn.disabled = true;
+            resultBox.textContent = '处理中...';
+
+            if (proto === 'http') {
+                try {
+                    const fd = new FormData();
+                    fd.append('prompt', prompt);
+                    fd.append('image', file);
+                    const resp = await fetch(base + '/img2txt/generate', {
+                        method: 'POST',
+                        body: fd
+                    });
+                    if (!resp.ok) throw new Error('HTTP错误 ' + resp.status);
+                    const data = await resp.json();
+                    resultBox.textContent = data.text ?? '(未返回 text)';
+                } catch (e) {
+                    resultBox.textContent = '错误：' + e.message;
+                } finally {
+                    sendBtn.disabled = false;
+                }
+                return;
+            }
+
+            // WebSocket
+            try {
+                const wsUrl = toWsURL(base) + '/img2txt/ws/generate';
+                const ws = new WebSocket(wsUrl);
+                let assembled = '';
+
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = async () => {
+                    resultBox.textContent = '连接成功，发送图片 & Prompt';
+                    const buf = await file.arrayBuffer();
+                    ws.send(buf);
+                    ws.send(prompt);
+                };
+                ws.onmessage = ev => {
+                    if (typeof ev.data === 'string') {
+                        assembled += ev.data;
+                        resultBox.textContent = assembled;
+                    } else {
+                        // 当前后端逻辑不会发送二进制返回，保留处理以防未来扩展
+                        resultBox.textContent += '\n[收到二进制数据长度 ' + ev.data.byteLength + ']';
+                    }
+                };
+                ws.onerror = () => {
+                    resultBox.textContent = 'WebSocket 错误';
+                };
+                ws.onclose = () => {
+                    sendBtn.disabled = false;
+                };
+            } catch (e) {
+                resultBox.textContent = '连接失败：' + e.message;
+                sendBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+
+</html>
