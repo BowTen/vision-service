@@ -3,11 +3,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
+import asyncio
 
 
 # -------- Fake Services --------
 class FakeTxt2ImgService:
     async def queued_generate(self, prompt: str):
+        await asyncio.sleep(2)
         # 返回一个 2x2 的简单 PNG 图像
         img = Image.new("RGB", (2, 2), color=(255, 0, 0))
         return img
@@ -15,16 +17,19 @@ class FakeTxt2ImgService:
 
 class FakeTxt2ImgServiceError(FakeTxt2ImgService):
     async def queued_generate(self, prompt: str):
+        await asyncio.sleep(2)
         raise RuntimeError("simulate generation failure")
 
 
 class FakeImg2TxtService:
     async def queued_generate(self, image_path: str, prompt: str):
+        await asyncio.sleep(2)
         return f"TEXT({prompt})"
 
 
 class FakeImg2TxtServiceError(FakeImg2TxtService):
     async def queued_generate(self, image_path: str, prompt: str):
+        await asyncio.sleep(2)
         raise RuntimeError("simulate img2txt failure")
 
 
