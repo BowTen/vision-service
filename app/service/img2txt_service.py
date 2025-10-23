@@ -33,10 +33,11 @@ class Img2TxtService:
 
         await asyncio.to_thread(load_model)
 
-    def _infer_sync(self, image_pth: str, prompt: str) -> str:
-        assert self.processor is not None and self.model is not None, (
-            "Model not initialized yet"
-        )
+    def _infer_sync(self, inputs: dict, max_new_tokens: int) -> str:
+        outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        return self.processor.decode(outputs[0][inputs["input_ids"].shape[-1] :])
+
+    def _process_inputs(self, image_pth: str, prompt: str) -> dict:
         messages = [
             {
                 "role": "user",
@@ -52,10 +53,14 @@ class Img2TxtService:
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
-        ).to(self.model.device)
+        ).to(self.model.device, non_blocking=True)
+        return inputs
 
-        outputs = self.model.generate(**inputs, max_new_tokens=100)
-        return self.processor.decode(outputs[0][inputs["input_ids"].shape[-1] :])
-
-    async def queued_generate(self, image_pth: str, prompt: str):
-        return await self.queue.submit(lambda: self._infer_sync(image_pth, prompt))
+    async def queued_generate(
+        self, image_pth: str, prompt: str, max_new_tokens: int = 100
+    ) -> str:
+        assert self.processor is not None and self.model is not None, (
+            "Model not initialized yet"
+        )
+        inputs = await asyncio.to_thread(self._process_inputs, image_pth, prompt)
+        return await self.queue.submit(lambda: self._infer_sync(inputs, max_new_tokens))
