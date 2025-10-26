@@ -14,7 +14,10 @@ async def lifespan(app: FastAPI):
         from app.service.txt2img_service import Txt2ImgService
 
         service = await Txt2ImgService.build(
-            model=settings.hf_home + "/" + settings.txt2img_model
+            model=settings.hf_home + "/" + settings.txt2img_model,
+            batch_size=settings.txt2img_batch_size,
+            num_inference_steps=settings.txt2img_infer_steps,
+            max_wait_ms=settings.txt2img_max_wait_ms,
         )
         app.state.services["txt2img"] = service
     elif settings.service_mode == "img2txt":
