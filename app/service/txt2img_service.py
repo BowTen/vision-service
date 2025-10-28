@@ -5,6 +5,7 @@ from typing import ClassVar, Optional
 from PIL.Image import Image
 from asyncio import Future
 from typing import Any
+import torch
 
 
 class Txt2ImgService:
@@ -23,6 +24,7 @@ class Txt2ImgService:
         self.batch_prompts: list = []
         self._future_result: Future = Future()
         self._batch_id: int = 0
+        self.device_str: str = "cuda:0"
 
     @classmethod
     async def build(
@@ -41,14 +43,26 @@ class Txt2ImgService:
 
     async def _initialize(self):
         def load_pipe():
-            pipe = DiffusionPipeline.from_pretrained(self._model)
-            pipe.to("cuda")
+            pipe = DiffusionPipeline.from_pretrained(
+                self._model, torch_dtype=torch.float16
+            )
+            pipe.to(self.device_str)
+            pipe.transformer = torch.compile(
+                pipe.transformer,
+                mode="max-autotune",
+            )
             self.pipe = pipe
 
         await asyncio.to_thread(load_pipe)
 
     def _infer_sync(self, batch_prompts: list) -> Any:
-        return self.pipe(batch_prompts, num_inference_steps=self.num_inference_steps)
+        with torch.inference_mode(), torch.amp.autocast(self.device_str, torch.float16):
+            return self.pipe(
+                batch_prompts,
+                num_inference_steps=self.num_inference_steps,
+                width=1024,
+                height=1024,
+            )
 
     async def flush_batch(self) -> Future:
         batch_prompts = self.batch_prompts
