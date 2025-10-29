@@ -1,11 +1,12 @@
 # vision-service
 
 FastAPI 异步图片生成与理解服务（Python 3.10）。  
-提供：
 
-- 文生图（Text-to-Image）：基于 **HunyuanDiT 1.5B**
-- 图片理解（Image-to-Text）：基于 **Qwen2.5VL-3B**
-  支持 HTTP 与 WebSocket 接口。可通过 Docker 镜像（已发布到 GHCR）部署并挂载本地/共享模型目录。
+- 文生图（Text-to-Image）：使用 **diffusers** 部署 **HunyuanDiT 1.5B** 推理
+- 图片理解（Image-to-Text）：使用 **transformers** 部署 **Qwen2.5VL-3B** 推理
+- 支持 HTTP 与 WebSocket 接口。
+- 可通过 Docker 镜像（已发布到 GHCR）部署并挂载本地/共享模型目录。
+- 图片理解服务使用**分桶批量推理**
 
 ---
 
