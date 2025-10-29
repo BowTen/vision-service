@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from app.config import settings
 from contextlib import asynccontextmanager
 from pathlib import Path
+from fastapi.middleware.cors import CORSMiddleware
 
 
 @asynccontextmanager
@@ -25,7 +26,6 @@ async def lifespan(app: FastAPI):
 
         service = await Img2TxtService.build(
             model=settings.hf_home + "/" + settings.img2txt_model,
-            batch_size=settings.img2txt_batch_size,
             max_new_tokens=100,
             max_wait_ms=settings.img2txt_max_wait_ms,
         )
@@ -43,6 +43,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="vision-service", version="0.1", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # 选择服务模式
 if settings.service_mode == "txt2img":

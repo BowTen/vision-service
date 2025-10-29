@@ -3,37 +3,49 @@ from typing import ClassVar, Optional, Any
 from app.models.infer_queue import InferQueue
 import asyncio
 from asyncio import Future
+import torch
+from PIL import Image
 
 
 class Img2TxtService:
     _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     _instance: ClassVar[Optional["Img2TxtService"]] = None
 
-    def __init__(
-        self, model: str, batch_size: int, max_new_tokens: int, max_wait_ms: int
-    ):
+    def __init__(self, model: str, max_new_tokens: int, max_wait_ms: int):
         self._model_path = model
         self.queue: InferQueue = InferQueue()
         self.processor: AutoProcessor | None = None
         self.model: AutoModelForVision2Seq | None = None
-        self._batch_size: int = batch_size
-        self._batch_messages: list = []
-        self._future_result: Future = asyncio.Future()
-        self._max_new_tokens: int = max_new_tokens
-        self._max_wait_ms: int = max_wait_ms
-        self._batch_id: int = 0
+        self.dtype: torch.dtype = (
+            torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        )
+
+        size_S = 1024 * 1024 + 1024
+        bucket_L: Bucket = Bucket(
+            self.queue, self.dtype, 2, max_new_tokens, max_wait_ms
+        )
+        bucket_M: Bucket = Bucket(
+            self.queue, self.dtype, 8, max_new_tokens, max_wait_ms
+        )
+        bucket_S: Bucket = Bucket(
+            self.queue, self.dtype, 32, max_new_tokens, max_wait_ms
+        )
+        self.buckets: list[tuple[Bucket, int]] = [
+            (bucket_S, size_S),
+            (bucket_M, size_S * 4),
+            (bucket_L, size_S * 16),
+        ]
 
     @classmethod
     async def build(
         cls,
         model: str,
-        batch_size: int = 1,
         max_new_tokens: int = 100,
         max_wait_ms: int = 5 * 1000,
     ) -> "Img2TxtService":
         async with cls._lock:
             if cls._instance is None:
-                inst = cls(model, batch_size, max_new_tokens, max_wait_ms)
+                inst = cls(model, max_new_tokens, max_wait_ms)
                 await inst._initialize()
                 cls._instance = inst
             return cls._instance
@@ -44,14 +56,65 @@ class Img2TxtService:
         def load_model():
             processor = AutoProcessor.from_pretrained(self._model_path)
             self.processor = processor
-            model = AutoModelForVision2Seq.from_pretrained(self._model_path)
-            model = model.to("cuda")
+            model = AutoModelForVision2Seq.from_pretrained(
+                self._model_path,
+                device_map="cuda",
+                torch_dtype=self.dtype,
+            )
             self.model = model
 
         await asyncio.to_thread(load_model)
 
+        for bucket, _ in self.buckets:
+            bucket.processor = self.processor
+            bucket.model = self.model
+
+    async def queued_generate(self, image_pth: str, prompt: str) -> str:
+        assert self.processor is not None and self.model is not None, (
+            "Model not initialized yet"
+        )
+
+        with Image.open(image_pth) as img:
+            width, height = img.size
+            image_size = width * height
+        prompt_size = image_size + len(prompt)
+
+        # TODO: 处理异常
+        if prompt_size > self.buckets[2][1]:
+            return f"数据过大: {width}*{height}+{len(prompt)}={prompt_size}"
+
+        for bk, sz in self.buckets:
+            if prompt_size <= sz:
+                bucket = bk
+                print(f"DEBUG: use bucket_size: {sz}")
+                break
+
+        return await bucket.submit(image_pth, prompt)
+
+
+class Bucket:
+    def __init__(
+        self,
+        queue: InferQueue,
+        dtype: torch.dtype,
+        batch_size: int,
+        max_new_tokens: int,
+        max_wait_ms: int,
+    ):
+        self.queue: InferQueue = queue
+        self.dtype: torch.dtype = dtype
+        self.processor: AutoProcessor | None = None
+        self.model: AutoModelForVision2Seq | None = None
+        self._batch_size: int = batch_size
+        self._batch_messages: list = []
+        self._future_result: Future = asyncio.Future()
+        self._max_new_tokens: int = max_new_tokens
+        self._max_wait_ms: int = max_wait_ms
+        self._batch_id: int = 0
+
     def _infer_sync(self, inputs: dict) -> Any:
-        return self.model.generate(**inputs, max_new_tokens=self._max_new_tokens)
+        with torch.amp.autocast("cuda", self.dtype):
+            return self.model.generate(**inputs, max_new_tokens=self._max_new_tokens)
 
     async def _process_inputs(self, messages: list) -> dict:
         def thread_process_inputs():
@@ -68,8 +131,9 @@ class Img2TxtService:
 
         return await asyncio.to_thread(thread_process_inputs)
 
-    async def _flush_batch(self) -> Future:
-        assert len(self._batch_messages) > 0
+    async def flush_batch(self) -> Future:
+        if len(self._batch_messages) == 0:
+            return self._future_result
         batch_messages = self._batch_messages
         future_result = self._future_result
         self._batch_id += 1
@@ -87,12 +151,9 @@ class Img2TxtService:
     async def _flush_batch_later(self, batch_id: int):
         await asyncio.sleep(self._max_wait_ms / 1000.0)
         if batch_id == self._batch_id and len(self._batch_messages) > 0:
-            await self._flush_batch()
+            await self.flush_batch()
 
-    async def queued_generate(self, image_pth: str, prompt: str) -> str:
-        assert self.processor is not None and self.model is not None, (
-            "Model not initialized yet"
-        )
+    async def submit(self, image_pth: str, prompt: str) -> str:
         result_id = len(self._batch_messages)
         messages = [
             {
@@ -105,15 +166,17 @@ class Img2TxtService:
         ]
         self._batch_messages.append(messages)
         if len(self._batch_messages) >= self._batch_size:
-            future_result = await self._flush_batch()
+            future_result = await self.flush_batch()
             (inputs, outputs) = await future_result
             return self.processor.decode(
-                outputs[result_id][inputs["input_ids"].shape[-1] :]
+                outputs[result_id][inputs["input_ids"].shape[-1] :],
+                skip_special_tokens=True,
             )
         else:
             if len(self._batch_messages) == 1:
                 asyncio.create_task(self._flush_batch_later(self._batch_id))
             (inputs, outputs) = await self._future_result
             return self.processor.decode(
-                outputs[result_id][inputs["input_ids"].shape[-1] :]
+                outputs[result_id][inputs["input_ids"].shape[-1] :],
+                skip_special_tokens=True,
             )
